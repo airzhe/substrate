@@ -54,6 +54,8 @@ use sp_std::prelude::*;
 
 use codec::{Decode, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
+use crypto_sm2::sm2;
+use sp_runtime::traits::Verify as SpVerify;
 
 pub mod bounded;
 pub mod curve;
@@ -97,7 +99,7 @@ pub use sp_arithmetic::helpers_128bit;
 pub use sp_arithmetic::{
 	traits::SaturatedConversion, FixedI128, FixedI64, FixedPointNumber, FixedPointOperand,
 	FixedU128, InnerOf, PerThing, PerU16, Perbill, Percent, Permill, Perquintill, Rational128,
-	Rounding, UpperOf,
+	 UpperOf,
 };
 
 pub use either::Either;
@@ -246,6 +248,8 @@ pub enum MultiSignature {
 	Sr25519(sr25519::Signature),
 	/// An ECDSA/SECP256k1 signature.
 	Ecdsa(ecdsa::Signature),
+	/// An SCA-256 signature
+	Sm2(sm2::Signature),
 }
 
 impl From<ed25519::Signature> for MultiSignature {
@@ -299,6 +303,27 @@ impl TryFrom<MultiSignature> for ecdsa::Signature {
 	}
 }
 
+impl From<sm2::Signature> for MultiSignature {
+	fn from(x: sm2::Signature) -> Self { MultiSignature::Sm2(x)}
+}
+
+impl TryFrom<MultiSignature> for sm2::Signature {
+	type Error = ();
+	fn try_from(m: MultiSignature) -> Result<Self, Self::Error> {
+		if let MultiSignature::Sm2(x) = m {
+			Ok(x)
+		} else {
+			Err(())
+		}
+	}
+}
+
+impl Default for MultiSignature {
+	fn default() -> Self {
+		MultiSignature::Sm2(Default::default())
+	}
+}
+
 /// Public key for any known crypto algorithm.
 #[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Encode, Decode, RuntimeDebug, TypeInfo)]
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
@@ -309,6 +334,14 @@ pub enum MultiSigner {
 	Sr25519(sr25519::Public),
 	/// An SECP256k1/ECDSA identity (actually, the Blake2 hash of the compressed pub key).
 	Ecdsa(ecdsa::Public),
+	/// 
+	Sm2(sm2::Public),
+}
+
+impl Default for MultiSigner {
+	fn default() -> Self {
+		MultiSigner::Sm2(Default::default())
+	}
 }
 
 /// NOTE: This implementations is required by `SimpleAddressDeterminer`,
@@ -325,6 +358,7 @@ impl AsRef<[u8]> for MultiSigner {
 			Self::Ed25519(ref who) => who.as_ref(),
 			Self::Sr25519(ref who) => who.as_ref(),
 			Self::Ecdsa(ref who) => who.as_ref(),
+			Self::Sm2(ref who) => who.as_ref(),
 		}
 	}
 }
@@ -336,6 +370,7 @@ impl traits::IdentifyAccount for MultiSigner {
 			Self::Ed25519(who) => <[u8; 32]>::from(who).into(),
 			Self::Sr25519(who) => <[u8; 32]>::from(who).into(),
 			Self::Ecdsa(who) => sp_io::hashing::blake2_256(who.as_ref()).into(),
+			Self::Sm2(who) => sp_io::hashing::blake2_256(&who.as_ref()[..]).into(),
 		}
 	}
 }
@@ -391,6 +426,18 @@ impl TryFrom<MultiSigner> for ecdsa::Public {
 	}
 }
 
+impl From<sm2::Public> for MultiSigner {
+	fn from(x: sm2::Public) -> Self { MultiSigner::Sm2(x)}
+}
+
+impl TryFrom<MultiSigner> for sm2::Public {
+	type Error = ();
+	fn try_from(m: MultiSigner) -> Result<Self, Self::Error> {
+		if let MultiSigner::Sm2(x) = m { Ok(x) } else { Err(()) }
+	}
+}
+
+
 #[cfg(feature = "std")]
 impl std::fmt::Display for MultiSigner {
 	fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -398,6 +445,7 @@ impl std::fmt::Display for MultiSigner {
 			Self::Ed25519(ref who) => write!(fmt, "ed25519: {}", who),
 			Self::Sr25519(ref who) => write!(fmt, "sr25519: {}", who),
 			Self::Ecdsa(ref who) => write!(fmt, "ecdsa: {}", who),
+			Self::Sm2(ref who) => write!(fmt, "sm2: {}", who),
 		}
 	}
 }
@@ -423,6 +471,12 @@ impl Verify for MultiSignature {
 					_ => false,
 				}
 			},
+			(Self::Sm2(ref sig), who) => {
+				let pk = sig.into_sm2_pk();
+				let r = sig.verify(msg.get(), &sm2::Public::from_raw(pk));
+				let eq = &sp_io::hashing::blake2_256(pk.as_ref()) == <dyn AsRef<[u8; 32]>>::as_ref(who);
+				r && eq
+			}
 		}
 	}
 }
